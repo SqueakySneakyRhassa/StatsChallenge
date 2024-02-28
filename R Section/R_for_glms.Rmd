@@ -1,0 +1,278 @@
+---
+title: "Stats_challenge2"
+output: html_document
+date: "2024-02-19"
+---
+```{r}
+install.packages("AER")
+library(AER)
+install.packages("pscl")
+library("pscl")
+library(MASS)
+library(dplyr)
+df_train<-read.csv("df_train.csv")
+df_test<-read.csv("df_test.csv")
+```
+
+
+```{r}
+Bin_cts_var<-function(x,y){
+  a=seq(from=min(x,y), to=max(x,y), length.out=11)
+  c1=cut(x, a, include.lowest = TRUE)
+  c1=as.character(c1)
+  return(c1)
+}
+
+
+df_train$CatVehAge=Bin_cts_var(df_train$VehAge, df_test$VehAge)
+df_train$CatDrivAge=Bin_cts_var(df_train$DrivAge, df_test$DrivAge)
+df_test$CatVehAge=Bin_cts_var(df_test$VehAge, df_train$VehAge)
+df_test$CatDrivAge=Bin_cts_var(df_test$DrivAge, df_train$DrivAge)
+
+unique(df_test$CatDrivAge)
+unique(df_train$CatDrivAge)
+
+unique(df_test$CatVehAge)
+unique(df_train$CatVehAge)
+
+```
+
+```{r}
+null_deviance <- deviance(glm(formula = ClaimNb ~ offset(log(Exposure))+1, 
+                              family = poisson(link = "log"), data = df_train))
+```
+
+```{r}
+MAE<-function(y,y_pred){
+  a=y-y_pred
+  a=abs(a)
+  a=sum(a)
+  a=a/length(y)
+  return(a)
+}
+```
+
+
+Here I am using ClaimNB as my response variable as opposed to Frequency because fitting a glm with family = poisson requires the response variable to be an integer data type.
+
+```{r}
+glm.out1<-glm(ClaimNb~offset(log(Exposure)) +Density+CatVehAge+CatDrivAge+BonusMalus
+              +VehBrand+VehPower+VehGas+Region+Area, family = poisson(link = "log"), data = df_train)
+summary(glm.out1)
+
+y_pred=predict(glm.out1, newdata = df_test, type="response")
+
+max(y_pred)
+
+MAE(df_test$ClaimNb, y_pred)
+
+residual_deviance1 <- deviance(glm.out1)
+
+# Calculate deviance explained
+deviance_explained1 <- 1 - residual_deviance1/null_deviance
+
+deviance_explained1
+```
+
+Here we perform the test to check for over dispersion. The test does the following: deviance(model)/degrees of freedom
+```{r}
+dispersiontest(glm.out1)
+```
+
+
+###Zero-inflated
+```{r}
+glm.out2=zeroinfl(ClaimNb~offset(log(Exposure)) +Density+CatVehAge+CatDrivAge+BonusMalus
+              +VehBrand+VehPower+VehGas+Region+Area, dist = "poisson", data = df_train)
+summary(glm.out2)
+y_pred2=predict(glm.out2, newdata = df_test, type="response")
+max(y_pred2)
+
+MAE(df_test$ClaimNb, y_pred2)
+
+residual_deviance2 <- deviance(glm.out2)
+
+# Calculate deviance explained
+deviance_explained2 <- 1 - residual_deviance2/null_deviance
+
+deviance_explained2
+```
+
+###Hurdle
+```{r}
+glm.out3=hurdle(ClaimNb~offset(log(Exposure)) +Density+CatVehAge+CatDrivAge+BonusMalus
+              +VehBrand+VehPower+VehGas+Region+Area, dist = "poisson", data = df_train)
+summary(glm.out3)
+y_pred3=predict(glm.out3, newdata = df_test, type="response")
+max(y_pred3)
+
+MAE(df_test$ClaimNb, y_pred3)
+
+residual_deviance3 <- deviance(glm.out3)
+
+# Calculate deviance explained
+deviance_explained3 <- 1 - residual_deviance3/null_deviance
+
+deviance_explained3
+```
+
+### Quasi Poisson
+```{r}
+glm.out4=glm(ClaimNb~offset(log(Exposure)) +Density+CatVehAge+CatDrivAge+BonusMalus
+              +VehBrand+VehPower+VehGas+Region+Area, family  = "quasipoisson", data = df_train)
+summary(glm.out4)
+y_pred4=predict(glm.out4, newdata = df_test, type="response")
+max(y_pred4)
+
+MAE(df_test$ClaimNb, y_pred4)
+
+
+
+residual_deviance4 <- deviance(glm.out4)
+
+# Calculate deviance explained
+deviance_explained4 <- 1 - residual_deviance4/null_deviance
+
+deviance_explained4
+
+```
+
+
+### Negative Binomial
+```{r}
+glm.out5=glm.nb(ClaimNb~offset(log(Exposure)) +Density+CatVehAge+CatDrivAge+BonusMalus
+              +VehBrand+VehPower+VehGas+Region+Area, data = df_train)
+summary(glm.out5)
+y_pred5=predict(glm.out5, newdata = df_test, type="response")
+max(y_pred5)
+
+MAE(df_test$ClaimNb, y_pred5)
+
+residual_deviance5 <- deviance(glm.out5)
+
+# Calculate deviance explained
+deviance_explained5 <- 1 - residual_deviance5/null_deviance
+
+deviance_explained5
+
+```
+
+
+Now it's time to do feature engineering based on the SHAP values.
+In other words we will refit the models based on the features selected by the SHAP values, and then we will perform tests to check whether the models post feature engineering are better than the old ones.
+To do this we need to alter the 2 categorical variables that are included in the graph of the SHAP values: VehBrand and Region.
+```{r}
+# Create a new column with 1 for the desired category, 0 otherwise
+df_train2 <- df_train %>%
+  mutate(VehBrand = ifelse( VehBrand == "B12", 1, 0))
+
+df_train2 <- df_train2 %>%
+  mutate(Region = ifelse( Region == "R91", 1, 0))
+
+df_test2 <- df_test %>%
+  mutate(VehBrand = ifelse( VehBrand == "B12", 1, 0))
+
+df_test2 <- df_test2 %>%
+  mutate(Region = ifelse( Region == "R91", 1, 0))
+```
+
+
+###Regular Poisson
+Here we're fitting the regular poisson glm, but with the new features. We will do this for the other 4 as well.
+```{r}
+glm.out1_new<-glm(ClaimNb~offset(log(Exposure)) +Density+CatDrivAge+BonusMalus
+              +VehBrand+Region, family = poisson(link = "log"), data = df_train2)
+summary(glm.out1_new)
+
+anova(glm.out1_new,glm.out1,test = "Chisq")
+```
+
+Based on the results of the anova test we have sufficient evidence to say that the new model is better than the old one.
+
+```{r}
+y_pred1_new<-predict(glm.out1_new, newdata = df_test2, type="response")
+
+MAE(df_test2$ClaimNb, y_pred1_new)
+
+residual_deviance1_new <- deviance(glm.out1_new)
+
+# Calculate deviance explained
+deviance_explained1_new <- 1 - residual_deviance1_new/null_deviance
+
+deviance_explained1_new
+```
+
+
+###Zero inflated
+```{r}
+glm.out2_new<-zeroinfl(ClaimNb~offset(log(Exposure)) +Density+CatDrivAge+BonusMalus
+              +VehBrand+Region, dist = "poisson", data = df_train2)
+summary(glm.out2_new)
+print(AIC(glm.out2, glm.out2_new))
+```
+Based on the AIC values we can say that the old model is better.
+
+
+###Hurdle
+```{r}
+glm.out3_new<-hurdle(ClaimNb~offset(log(Exposure)) +Density+CatDrivAge+BonusMalus
+              +VehBrand+Region, dist = "poisson", data = df_train2)
+summary(glm.out3_new)
+print(AIC(glm.out3, glm.out3_new))
+```
+
+Based on the AIC values we can say that the old model is better.
+
+###Quasi
+```{r}
+glm.out4_new<-glm(ClaimNb~offset(log(Exposure)) +Density+CatDrivAge+BonusMalus
+              +VehBrand+Region, family  = "quasipoisson", data = df_train2)
+summary(glm.out4_new)
+anova(glm.out4_new, glm.out4,test = "Chisq")
+```
+
+Based on the results of the anova test we have sufficient evidence to say that the new model is better than the old one.
+
+```{r}
+y_pred4_new<-predict(glm.out4_new, newdata = df_test2, type="response")
+
+MAE(df_test2$ClaimNb, y_pred4_new)
+
+residual_deviance4_new <- deviance(glm.out4_new)
+
+# Calculate deviance explained
+deviance_explained4_new <- 1 - residual_deviance4_new/null_deviance
+
+deviance_explained4_new
+```
+
+
+###Negative Binomial
+```{r}
+glm.out5_new<-glm.nb(ClaimNb~offset(log(Exposure)) +Density+CatDrivAge+BonusMalus
+              +VehBrand+Region, data = df_train2)
+summary(glm.out5_new)
+anova(glm.out5_new, glm.out5,test = "Chisq")
+```
+
+Based on the results of the anova test we have sufficient evidence to say that the new model is better than the old one.
+
+```{r}
+y_pred5_new<-predict(glm.out5_new, newdata = df_test2, type="response")
+
+MAE(df_test2$ClaimNb, y_pred5_new)
+
+residual_deviance5_new <- deviance(glm.out5_new)
+
+# Calculate deviance explained
+deviance_explained5_new <- 1 - residual_deviance5_new/null_deviance
+
+deviance_explained5_new
+```
+
+
+
+
+
+
+
